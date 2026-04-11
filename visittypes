@@ -1,0 +1,19 @@
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+top_outliers_subset <- top_outliers %>%
+  dplyr::filter(group %in% c("transport"))
+
+ggplot(top_outliers_subset, aes(x = reorder(VisitTypeDescription, prop_diff), y = prop_diff, fill = prop_diff > 0)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~ group, scales = "free_y") +
+  scale_fill_manual(values = c("TRUE" = "tomato", "FALSE" = "steelblue")) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  labs(
+    title = "Visit Type Proportion Differences Relative to Score 0",
+    x = "Visit Type Description",
+    y = "Difference in Proportion vs Score 0"
+  ) +
+  theme_minimal()
