@@ -1,0 +1,343 @@
+departments <- read.csv("C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/departments.csv")
+diagnosis <- read.csv("C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/diagnosis.csv")
+encounters <- read.csv("C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/encounters.csv")
+patients <- read.csv("C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/patients.csv")
+providers <- read.csv("C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/providers.csv")
+social_determinants <- read.csv("C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/social_determinants.csv")
+tigercensuscodes <- read.csv("C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/tigercensuscodes.csv")
+
+library(tidyverse)
+
+files <- c("C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/departments.csv","C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/diagnosis.csv", "C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/encounters.csv", 
+           "C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/patients.csv", "C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/providers.csv","C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/social_determinants.csv", "C:/Users/colin/OneDrive - University of Missouri/Desktop/DataFest2026/tigercensuscodes.csv")
+for (f in files) {
+  cat("\n---", f, "---\n")
+  print(colnames(read_csv(f, n_max = 0)))
+}
+combined <- files %>%
+  map_dfr(read_csv)
+
+er_summary <- combined %>%
+  group_by(PatientDurableKey) %>%
+  summarise(
+    total_encounters = n_distinct(EncounterKey),
+    er_visits = sum(IsEdVisit == 1, na.rm = TRUE),
+    prop_er = er_visits / total_encounters,
+    .groups = "drop"
+  )
+combined %>%
+  distinct(Domain, AnswerText) %>%
+  arrange(Domain)
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+questions <- c(
+  "In the past 12 months has the electric, gas, oil, or water company threatened to shut off services in your home?",
+  "In the last 12 months, was there a time when you were not able to pay the mortgage or rent on time?",
+  "Within the past 12 months, you worried that your food would run out before you got the money to buy more.",
+  "Within the past 12 months, the food you bought just didn't last and you didn't have money to get more.",
+  "At any time in the past 12 months, were you homeless or living in a shelter (including now)?",
+  "In the past 12 months, has lack of transportation kept you from meetings, work, or from getting things needed for daily living?",
+  "In the past 12 months, has lack of transportation kept you from medical appointments or from getting medications?"
+)
+
+question_codes <- c("q1", "q2", "q3", "q4", "q6", "q7", "q8")
+
+patient_questions <- social_determinants %>%
+  filter(DisplayName %in% questions) %>%
+  mutate(
+    question_code = question_codes[match(DisplayName, questions)],
+    positive = case_when(
+      DisplayName == questions[1] & AnswerText %in% c("Yes", "Already shut off") ~ 1,
+      DisplayName == questions[1] & AnswerText == "No" ~ 0,
+      DisplayName == questions[2] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[2] & AnswerText == "No" ~ 0,
+      DisplayName == questions[3] & AnswerText %in% c("Sometimes true", "Often true") ~ 1,
+      DisplayName == questions[3] & AnswerText == "Never true" ~ 0,
+      DisplayName == questions[4] & AnswerText %in% c("Sometimes true", "Often true") ~ 1,
+      DisplayName == questions[4] & AnswerText == "Never true" ~ 0,
+      DisplayName == questions[5] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[5] & AnswerText == "No" ~ 0,
+      DisplayName == questions[6] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[6] & AnswerText == "No" ~ 0,
+      DisplayName == questions[7] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[7] & AnswerText == "No" ~ 0,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  group_by(PatientDurableKey, question_code) %>%
+  summarise(
+    positive = if (all(is.na(positive))) NA_real_ else max(positive, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from  = question_code,
+    values_from = positive
+  )
+
+model_predictors <- patient_questions %>%
+  mutate(
+    food_insecurity = case_when(
+      !is.na(q3) & q3 == 1 ~ 1,
+      !is.na(q4) & q4 == 1 ~ 1,
+      (!is.na(q3) & q3 == 0) | (!is.na(q4) & q4 == 0) ~ 0,
+      TRUE ~ NA_real_
+    ),
+    transportation_barrier = case_when(
+      !is.na(q7) & q7 == 1 ~ 1,
+      !is.na(q8) & q8 == 1 ~ 1,
+      (!is.na(q7) & q7 == 0) | (!is.na(q8) & q8 == 0) ~ 0,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  select(
+    PatientDurableKey,
+    q1,
+    q2,
+    q6,
+    food_insecurity,
+    transportation_barrier
+  ) %>%
+  mutate(
+    sdoh_5_score = q1 + q2 + q6 + food_insecurity + transportation_barrier
+  )
+
+patient_er <- encounters %>%
+  mutate(
+    ed_flag = case_when(
+      IsEdVisit %in% c(TRUE, 1, "1", "Yes", "YES", "yes") ~ 1,
+      IsEdVisit %in% c(FALSE, 0, "0", "No", "NO", "no") ~ 0,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  group_by(PatientDurableKey) %>%
+  summarise(
+    total_encounters = n_distinct(EncounterKey),
+    er_visits        = sum(ed_flag == 1, na.rm = TRUE),
+    prop_er          = er_visits / total_encounters,
+    had_ed           = if (all(is.na(ed_flag))) NA_real_ else as.numeric(any(ed_flag == 1, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+model_data_5 <- model_predictors %>%
+  inner_join(patient_er, by = "PatientDurableKey") %>%
+  filter(!is.na(had_ed))
+
+er_model_5 <- glm(
+  had_ed ~ q1 + q2 + q6 + food_insecurity + transportation_barrier,
+  data   = model_data_5,
+  family = binomial()
+)
+
+summary(er_model_5)
+
+coef_mat <- summary(er_model_5)$coefficients
+
+weight_table <- data.frame(
+  variable   = rownames(coef_mat),
+  estimate   = coef_mat[, "Estimate"],
+  odds_ratio = exp(coef_mat[, "Estimate"]),
+  p_value    = coef_mat[, "Pr(>|z|)"],
+  row.names  = NULL
+) %>%
+  filter(variable != "(Intercept)")
+
+print(weight_table)
+
+model_data_5 <- model_data_5 %>%
+  mutate(
+    weighted_sdoh_score =
+      (q1                    * abs(coef(er_model_5)["q1"])) +
+      (q2                    * abs(coef(er_model_5)["q2"])) +
+      (q6                    * abs(coef(er_model_5)["q6"])) +
+      (food_insecurity       * abs(coef(er_model_5)["food_insecurity"])) +
+      (transportation_barrier * abs(coef(er_model_5)["transportation_barrier"]))
+  ) %>%
+  mutate(
+    score_group = factor(
+      case_when(
+        sdoh_5_score == 0 ~ "None (0)",
+        sdoh_5_score <= 3 ~ "Low (1-3)",
+        sdoh_5_score >= 4 ~ "High (4-5)"
+      ),
+      levels = c("None (0)", "Low (1-3)", "High (4-5)")
+    )
+  )
+
+spearman_result <- cor.test(model_data_5$weighted_sdoh_score,
+                            model_data_5$had_ed,
+                            method = "spearman")
+print(spearman_result)
+
+model_data_5 %>%
+  count(score_group) %>%
+  ggplot(aes(x = score_group, y = n)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Number of Patients by SDOH Score Group",
+    x     = "SDOH Score Group",
+    y     = "Number of Patients"
+  ) +
+  theme_minimal()
+
+ggsave("sdoh_group_counts.png", width = 8, height = 5, dpi = 300)
+
+ggplot(model_data_5, aes(x = score_group, y = prop_er)) +
+  geom_boxplot(fill = "steelblue") +
+  labs(
+    title = "ER Proportion by SDOH Score Group",
+    x     = "SDOH Score Group",
+    y     = "Proportion of ER Visits"
+  ) +
+  theme_minimal()
+
+ggsave("sdoh_er_boxplot.png", width = 8, height = 5, dpi = 300)
+
+model_data_5 %>%
+  group_by(score_group) %>%
+  summarise(
+    n_patients     = n(),
+    avg_prop_er    = mean(prop_er, na.rm = TRUE),
+    median_prop_er = median(prop_er, na.rm = TRUE)
+  ) %>%
+  print()
+
+weight_table %>%
+  ggplot(aes(x = reorder(variable, odds_ratio), y = odds_ratio)) +
+  geom_col(fill = "steelblue") +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(
+    title = "Odds Ratios for Each SDOH Domain Predicting ER Visit",
+    x     = "SDOH Domain",
+    y     = "Odds Ratio"
+  ) +
+  theme_minimal()
+
+ggsave("sdoh_odds_ratios.png", width = 8, height = 5, dpi = 300)
+
+weight_table
+
+model_data_5 %>%
+  summarise(
+    avg_score_q1        = mean(sdoh_5_score[q1 == 1], na.rm = TRUE),
+    avg_score_q2        = mean(sdoh_5_score[q2 == 1], na.rm = TRUE),
+    avg_score_q6        = mean(sdoh_5_score[q6 == 1], na.rm = TRUE),
+    avg_score_food      = mean(sdoh_5_score[food_insecurity == 1], na.rm = TRUE),
+    avg_score_transport = mean(sdoh_5_score[transportation_barrier == 1], na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to  = "domain",
+    values_to = "avg_sdoh_score"
+  ) %>%
+  mutate(domain = recode(domain,
+                         "avg_score_q1"        = "Utility Shutoff",
+                         "avg_score_q2"        = "Rent/Mortgage Instability",
+                         "avg_score_q6"        = "Homelessness",
+                         "avg_score_food"      = "Food Insecurity",
+                         "avg_score_transport" = "Transportation Barrier"
+  )) %>%
+  ggplot(aes(x = reorder(domain, avg_sdoh_score), y = avg_sdoh_score, fill = domain)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = round(avg_sdoh_score, 2)), 
+            hjust = -0.2, 
+            size  = 4) +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, 5)) +
+  labs(
+    title = "Average Financial Burden Score by SDOH Domain",
+    x     = "SDOH Domain",
+    y     = "Average SDOH Score (out of 5)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggsave("avg_score_by_domain.png", width = 8, height = 5, dpi = 300)
+
+lab_followup <- encounters %>%
+  mutate(
+    is_lab = case_when(
+      grepl("lab|laboratory|blood|specimen|pathology", 
+            VisitTypeDescription, ignore.case = TRUE) ~ 1,
+      TRUE ~ 0
+    ),
+    is_outpatient = case_when(
+      IsHospitalOutpatientVisit == 1 ~ 1,
+      IsOutpatientFaceToFaceVisit == 1 ~ 1,
+      TRUE ~ 0
+    )
+  ) %>%
+  group_by(PatientDurableKey) %>%
+  summarise(
+    total_encounters  = n_distinct(EncounterKey),
+    lab_visits        = sum(is_lab == 1, na.rm = TRUE),
+    outpatient_visits = sum(is_outpatient == 1, na.rm = TRUE),
+    prop_lab          = lab_visits / total_encounters,
+    prop_outpatient   = outpatient_visits / total_encounters,
+    .groups = "drop"
+  )
+
+transport_lab <- model_data_5 %>%
+  inner_join(lab_followup, by = "PatientDurableKey") %>%
+  mutate(
+    transport_label = ifelse(transportation_barrier == 1,
+                             "Transportation Barrier",
+                             "No Transportation Barrier")
+  )
+
+transport_lab %>%
+  group_by(transport_label) %>%
+  summarise(
+    n_patients        = n(),
+    avg_prop_lab      = mean(prop_lab, na.rm = TRUE),
+    avg_prop_outpatient = mean(prop_outpatient, na.rm = TRUE),
+    avg_prop_er       = mean(prop_er, na.rm = TRUE)
+  )
+
+ggplot(transport_lab, aes(x = transport_label, y = prop_lab, fill = transport_label)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("steelblue", "tomato")) +
+  labs(
+    title = "Lab Visit Proportion by Transportation Barrier Status",
+    x     = "",
+    y     = "Proportion of Lab Visits"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggsave("lab_transport_boxplot.png", width = 8, height = 5, dpi = 300)
+
+transport_lab %>%
+  group_by(transport_label) %>%
+  summarise(
+    Labs       = mean(prop_lab, na.rm = TRUE),
+    Outpatient = mean(prop_outpatient, na.rm = TRUE),
+    ER         = mean(prop_er, na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    cols      = c(Labs, Outpatient, ER),
+    names_to  = "visit_type",
+    values_to = "proportion"
+  ) %>%
+  ggplot(aes(x = visit_type, y = proportion, fill = transport_label)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("steelblue", "tomato")) +
+  labs(
+    title = "Visit Type Proportions by Transportation Barrier Status",
+    x     = "Visit Type",
+    y     = "Average Proportion of Visits",
+    fill  = ""
+  ) +
+  theme_minimal()
+
+ggsave("visit_type_transport.png", width = 8, height = 5, dpi = 300)
+
+encounters %>%
+  distinct(VisitTypeDescription) %>%
+  filter(grepl("lab|blood|specimen|pathology", 
+               VisitTypeDescription, ignore.case = TRUE)) %>%
+  print()
