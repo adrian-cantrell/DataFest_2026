@@ -1,0 +1,128 @@
+library(dplyr)
+library(tidyr)
+
+# 1. Define the 7 retained questions
+questions <- c(
+  "In the past 12 months has the electric, gas, oil, or water company threatened to shut off services in your home?",
+  "In the last 12 months, was there a time when you were not able to pay the mortgage or rent on time?",
+  "Within the past 12 months, you worried that your food would run out before you got the money to buy more.",
+  "Within the past 12 months, the food you bought just didn't last and you didn't have money to get more.",
+  "At any time in the past 12 months, were you homeless or living in a shelter (including now)?",
+  "In the past 12 months, has lack of transportation kept you from meetings, work, or from getting things needed for daily living?",
+  "In the past 12 months, has lack of transportation kept you from medical appointments or from getting medications?"
+)
+
+question_codes <- c("q1", "q2", "q3", "q4", "q6", "q7", "q8")
+
+# 2. Turn each question into a patient-level 0/1 variable
+patient_questions <- social %>%
+  filter(DisplayName %in% questions) %>%
+  mutate(
+    question_code = question_codes[match(DisplayName, questions)],
+    positive = case_when(
+      DisplayName == questions[1] & AnswerText %in% c("Yes", "Already shut off") ~ 1,
+      DisplayName == questions[1] & AnswerText == "No" ~ 0,
+
+      DisplayName == questions[2] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[2] & AnswerText == "No" ~ 0,
+
+      DisplayName == questions[3] & AnswerText %in% c("Sometimes true", "Often true") ~ 1,
+      DisplayName == questions[3] & AnswerText == "Never true" ~ 0,
+
+      DisplayName == questions[4] & AnswerText %in% c("Sometimes true", "Often true") ~ 1,
+      DisplayName == questions[4] & AnswerText == "Never true" ~ 0,
+
+      DisplayName == questions[5] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[5] & AnswerText == "No" ~ 0,
+
+      DisplayName == questions[6] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[6] & AnswerText == "No" ~ 0,
+
+      DisplayName == questions[7] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[7] & AnswerText == "No" ~ 0,
+
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  group_by(PatientDurableKey, question_code) %>%
+  summarise(
+    positive = if (all(is.na(positive))) NA_real_ else max(positive, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = question_code,
+    values_from = positive
+  )
+
+# 3. Combine the collinear pairs into binary domain variables
+model_predictors <- patient_questions %>%
+  mutate(
+    food_insecurity = case_when(
+      !is.na(q3) & q3 == 1 ~ 1,
+      !is.na(q4) & q4 == 1 ~ 1,
+      (!is.na(q3) & q3 == 0) | (!is.na(q4) & q4 == 0) ~ 0,
+      TRUE ~ NA_real_
+    ),
+    transportation_barrier = case_when(
+      !is.na(q7) & q7 == 1 ~ 1,
+      !is.na(q8) & q8 == 1 ~ 1,
+      (!is.na(q7) & q7 == 0) | (!is.na(q8) & q8 == 0) ~ 0,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  select(
+    PatientDurableKey,
+    q1,
+    q2,
+    q6,
+    food_insecurity,
+    transportation_barrier
+  )
+
+# Optional: a 0-5 domain score
+model_predictors <- model_predictors %>%
+  mutate(
+    sdoh_5_score = q1 + q2 + q6 + food_insecurity + transportation_barrier
+  )
+
+# 4. Create patient-level ER outcome from new_data
+patient_er <- new_data %>%
+  mutate(
+    ed_flag = case_when(
+      IsEdVisit %in% c(TRUE, 1, "1", "Yes", "YES", "yes") ~ 1,
+      IsEdVisit %in% c(FALSE, 0, "0", "No", "NO", "no") ~ 0,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  group_by(PatientDurableKey) %>%
+  summarise(
+    had_ed = if (all(is.na(ed_flag))) NA_real_ else as.numeric(any(ed_flag == 1, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+# 5. Build model dataset
+model_data_5 <- model_predictors %>%
+  inner_join(patient_er, by = "PatientDurableKey")
+
+# 6. Fit 5-variable logistic regression
+er_model_5 <- glm(
+  had_ed ~ q1 + q2 + q6 + food_insecurity + transportation_barrier,
+  data = model_data_5,
+  family = binomial()
+)
+
+summary(er_model_5)
+
+# 7. Extract weights, odds ratios, and p-values
+coef_mat <- summary(er_model_5)$coefficients
+
+weight_table <- data.frame(
+  variable = rownames(coef_mat),
+  estimate = coef_mat[, "Estimate"],
+  odds_ratio = exp(coef_mat[, "Estimate"]),
+  p_value = coef_mat[, "Pr(>|z|)"],
+  row.names = NULL
+) %>%
+  filter(variable != "(Intercept)")
+
+weight_table
