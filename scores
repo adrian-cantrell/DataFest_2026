@@ -1,0 +1,94 @@
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+
+social <- read_csv(
+  "/Users/adriancantrell/Documents/datafest26/2026-ASA-DataFest-Data-Files/datfest/social_determinants.csv",
+  show_col_types = FALSE
+)
+
+questions <- c(
+  "In the past 12 months has the electric, gas, oil, or water company threatened to shut off services in your home?",
+  "In the last 12 months, was there a time when you were not able to pay the mortgage or rent on time?",
+  "Within the past 12 months, you worried that your food would run out before you got the money to buy more.",
+  "Within the past 12 months, the food you bought just didn't last and you didn't have money to get more.",
+  "At any time in the past 12 months, were you homeless or living in a shelter (including now)?",
+  "In the past 12 months, has lack of transportation kept you from meetings, work, or from getting things needed for daily living?",
+  "In the past 12 months, has lack of transportation kept you from medical appointments or from getting medications?"
+)
+
+social_7q <- social %>%
+  filter(!is.na(Domain), Domain != "NA") %>%
+  filter(DisplayName %in% questions) %>%
+  mutate(
+    question_id = match(DisplayName, questions),
+    positive = case_when(
+      DisplayName == questions[1] & AnswerText %in% c("Yes", "Already shut off") ~ 1,
+      DisplayName == questions[1] & AnswerText == "No" ~ 0,
+
+      DisplayName == questions[2] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[2] & AnswerText == "No" ~ 0,
+
+      DisplayName == questions[3] & AnswerText %in% c("Sometimes true", "Often true") ~ 1,
+      DisplayName == questions[3] & AnswerText == "Never true" ~ 0,
+
+      DisplayName == questions[4] & AnswerText %in% c("Sometimes true", "Often true") ~ 1,
+      DisplayName == questions[4] & AnswerText == "Never true" ~ 0,
+
+      DisplayName == questions[5] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[5] & AnswerText == "No" ~ 0,
+
+      DisplayName == questions[6] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[6] & AnswerText == "No" ~ 0,
+
+      DisplayName == questions[7] & AnswerText == "Yes" ~ 1,
+      DisplayName == questions[7] & AnswerText == "No" ~ 0,
+
+      TRUE ~ NA_real_
+    )
+  )
+
+patient_scores <- social_7q %>%
+  group_by(PatientDurableKey, question_id) %>%
+  summarise(
+    positive = if (all(is.na(positive))) NA_real_ else max(positive, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(PatientDurableKey) %>%
+  summarise(
+    questions_answered = sum(!is.na(positive)),
+    score = ifelse(questions_answered == 0, NA_real_, sum(positive, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+score_counts <- patient_scores %>%
+  filter(!is.na(score)) %>%
+  count(score) %>%
+  complete(score = 0:7, fill = list(n = 0))
+
+ggplot(score_counts, aes(x = factor(score), y = n)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Number of Patients by SDOH Score",
+    x = "SDOH Score",
+    y = "Number of Patients"
+  ) +
+  theme_minimal()
+
+ggsave("sdoh_score_bar_graph.png", width = 8, height = 5, dpi = 300)
+
+score_counts <- patient_scores %>%
+  filter(!is.na(score), score > 0) %>%
+  count(score)
+
+
+ggplot(score_counts, aes(x = factor(score), y = n)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Number of Patients by SDOH Score",
+    x = "SDOH Score",
+    y = "Number of Patients"
+  ) +
+  theme_minimal()
