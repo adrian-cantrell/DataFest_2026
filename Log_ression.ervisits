@@ -1,0 +1,58 @@
+```{r}
+library(dplyr)
+library(tidyr)
+library(MASS)
+
+# Build the 5 grouped predictors
+model_predictors_5 <- model_predictors %>%
+  dplyr::rename(
+    utilities = q1,
+    rent = q2,
+    homeless = q6,
+    food = food_insecurity,
+    transport = transportation_barrier
+  )
+
+# ----------------------------
+# Logistic regression: Any ER visit
+# ----------------------------
+
+patient_er <- encounters.survey %>%
+  dplyr::mutate(
+    ed_flag = dplyr::case_when(
+      IsEdVisit %in% c(TRUE, 1, "1", "Yes", "YES", "yes") ~ 1,
+      IsEdVisit %in% c(FALSE, 0, "0", "No", "NO", "no") ~ 0,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  dplyr::group_by(PatientDurableKey) %>%
+  dplyr::summarise(
+    had_ed = if (all(is.na(ed_flag))) NA_real_ else as.numeric(any(ed_flag == 1, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+model_data_er <- model_predictors_5 %>%
+  dplyr::inner_join(patient_er, by = "PatientDurableKey")
+
+er_model_5 <- glm(
+  had_ed ~ utilities + rent + homeless + food + transport,
+  data = model_data_er,
+  family = binomial()
+)
+
+summary(er_model_5)
+
+er_coef_mat <- summary(er_model_5)$coefficients
+
+er_weight_table <- data.frame(
+  variable = rownames(er_coef_mat),
+  estimate = er_coef_mat[, "Estimate"],
+  odds_ratio = exp(er_coef_mat[, "Estimate"]),
+  p_value = er_coef_mat[, "Pr(>|z|)"],
+  row.names = NULL
+) %>%
+  dplyr::filter(variable != "(Intercept)") %>%
+  dplyr::arrange(dplyr::desc(abs(estimate)))
+
+er_weight_table
+```
