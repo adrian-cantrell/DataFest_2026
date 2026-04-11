@@ -1,0 +1,105 @@
+# The first part of this code finds, for each score, the proportion of with any visit to the ER.
+
+```{r}
+patient_er_5 <- model_predictors_5 %>%
+  dplyr::select(PatientDurableKey, sdoh_score_5) %>%
+  dplyr::inner_join(encounters.survey, by = "PatientDurableKey") %>%
+  dplyr::mutate(
+    ed_flag = dplyr::case_when(
+      IsEdVisit %in% c(TRUE, 1, "1", "Yes", "YES", "yes") ~ 1,
+      IsEdVisit %in% c(FALSE, 0, "0", "No", "NO", "no") ~ 0,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  dplyr::group_by(PatientDurableKey, sdoh_score_5) %>%
+  dplyr::summarise(
+    had_ed = if (all(is.na(ed_flag))) NA_real_ else as.numeric(any(ed_flag == 1, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  dplyr::filter(!is.na(had_ed))
+
+score_er_summary_5 <- patient_er_5 %>%
+  dplyr::group_by(sdoh_score_5) %>%
+  dplyr::summarise(
+    n_patients = dplyr::n(),
+    n_with_ed = sum(had_ed),
+    prop_with_ed = mean(had_ed),
+    .groups = "drop"
+  ) %>%
+  tidyr::complete(
+    sdoh_score_5 = 0:5,
+    fill = list(n_patients = 0, n_with_ed = 0, prop_with_ed = 0)
+  )
+```
+
+```{r}
+ggplot(score_er_summary_5, aes(x = factor(sdoh_score_5), y = prop_with_ed)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = paste0("n=", n_patients)), vjust = -0.4, size = 3) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) +
+  labs(
+    title = "ER Visit Rate by 5-Domain SDOH Score",
+    x = "SDOH Score (0-5)",
+    y = "Proportion of Patients with Any ER Visit"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(MASS)
+
+# 5 grouped predictors
+model_predictors_5 <- model_predictors %>%
+  dplyr::rename(
+    utilities = q1,
+    rent = q2,
+    homeless = q6,
+    food = food_insecurity,
+    transport = transportation_barrier
+  )
+
+# This builds a Logistic regression with utilities, rent, homeless, food, and transport as the predictors,
+# And Any ER visit (0-1) as the response.
+
+patient_er <- encounters.survey %>%
+  dplyr::mutate(
+    ed_flag = dplyr::case_when(
+      IsEdVisit %in% c(TRUE, 1, "1", "Yes", "YES", "yes") ~ 1,
+      IsEdVisit %in% c(FALSE, 0, "0", "No", "NO", "no") ~ 0,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  dplyr::group_by(PatientDurableKey) %>%
+  dplyr::summarise(
+    had_ed = if (all(is.na(ed_flag))) NA_real_ else as.numeric(any(ed_flag == 1, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+model_data_er <- model_predictors_5 %>%
+  dplyr::inner_join(patient_er, by = "PatientDurableKey")
+
+er_model_5 <- glm(
+  had_ed ~ utilities + rent + homeless + food + transport,
+  data = model_data_er,
+  family = binomial()
+)
+
+summary(er_model_5)
+
+er_coef_mat <- summary(er_model_5)$coefficients
+
+er_weight_table <- data.frame(
+  variable = rownames(er_coef_mat),
+  estimate = er_coef_mat[, "Estimate"],
+  odds_ratio = exp(er_coef_mat[, "Estimate"]),
+  p_value = er_coef_mat[, "Pr(>|z|)"],
+  row.names = NULL
+) %>%
+  dplyr::filter(variable != "(Intercept)") %>%
+  dplyr::arrange(dplyr::desc(abs(estimate)))
+
+er_weight_table
+```
